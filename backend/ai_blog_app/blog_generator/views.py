@@ -156,7 +156,7 @@ from django.views.decorators.csrf import csrf_exempt
 from django.http import JsonResponse
 from django.conf import settings
 import json
-from pytube import YouTube
+import yt_dlp as youtube_dl
 import os
 import assemblyai as aai
 import openai
@@ -176,22 +176,20 @@ def generate_blog(request):
         except (KeyError, json.JSONDecodeError):
             return JsonResponse({'error': 'Invalid data sent'}, status=400)
 
-
-        # get yt title
+        # Get YT title
         title = yt_title(yt_link)
 
-        # get transcript
+        # Get transcript
         transcription = get_transcription(yt_link)
         if not transcription:
-            return JsonResponse({'error': " Failed to get transcript"}, status=500)
+            return JsonResponse({'error': "Failed to get transcript"}, status=500)
 
-
-        # use OpenAI to generate the blog
+        # Use OpenAI to generate the blog
         blog_content = generate_blog_from_transcription(transcription)
         if not blog_content:
-            return JsonResponse({'error': " Failed to generate blog article"}, status=500)
+            return JsonResponse({'error': "Failed to generate blog article"}, status=500)
 
-        # save blog article to database
+        # Save blog article to database
         new_blog_article = BlogPost.objects.create(
             user=request.user,
             youtube_title=title,
@@ -200,27 +198,45 @@ def generate_blog(request):
         )
         new_blog_article.save()
 
-        # return blog article as a response
+        # Return blog article as a response
         return JsonResponse({'content': blog_content})
     else:
         return JsonResponse({'error': 'Invalid request method'}, status=405)
 
 def yt_title(link):
-    yt = YouTube(link)
-    title = yt.title
-    return title
+    ydl_opts = {}
+    try:
+        with youtube_dl.YoutubeDL(ydl_opts) as ydl:
+            info_dict = ydl.extract_info(link, download=False)
+            title = info_dict.get('title', None)
+            return title
+    except Exception as e:
+        print(f"Error getting title: {e}")
+        return None
 
 def download_audio(link):
-    yt = YouTube(link)
-    video = yt.streams.filter(only_audio=True).first()
-    out_file = video.download(output_path=settings.MEDIA_ROOT)
-    base, ext = os.path.splitext(out_file)
-    new_file = base + '.mp3'
-    os.rename(out_file, new_file)
-    return new_file
+    ydl_opts = {
+        'format': 'bestaudio/best',
+        'outtmpl': os.path.join(settings.MEDIA_ROOT, '%(title)s.%(ext)s'),
+        'postprocessors': [{
+            'key': 'FFmpegExtractAudio',
+            'preferredcodec': 'mp3',
+            'preferredquality': '192',
+        }],
+    }
+    try:
+        with youtube_dl.YoutubeDL(ydl_opts) as ydl:
+            info_dict = ydl.extract_info(link, download=True)
+            file_path = ydl.prepare_filename(info_dict)
+            return file_path.replace('.webm', '.mp3')  # Adjust file extension
+    except Exception as e:
+        print(f"Error downloading audio: {e}")
+        return None
 
 def get_transcription(link):
     audio_file = download_audio(link)
+    if not audio_file:
+        return None
     aai.settings.api_key = "09b5af1f037649ea8d1accdf0d7facae"
 
     transcriber = aai.Transcriber()
@@ -231,7 +247,7 @@ def get_transcription(link):
 def generate_blog_from_transcription(transcription):
     openai.api_key = "sk-LPvcJuTKkv4yOLPc6aS_1yNis1JmTNfDl3GtjMpgC_T3BlbkFJ6xVeK6jrPZsei0MufXISzoqThiDcz-X9JPpUWE9PUA"
 
-    prompt = f"Based on the following transcript from a YouTube video, write a comprehensive blog article, write it based on the transcript, but dont make it look like a youtube video, make it look like a proper blog article:\n\n{transcription}\n\nArticle:"
+    prompt = f"Based on the following transcript from a YouTube video, write a comprehensive blog article, write it based on the transcript, but don't make it look like a YouTube video, make it look like a proper blog article:\n\n{transcription}\n\nArticle:"
 
     response = openai.Completion.create(
         model="text-davinci-003",
@@ -242,8 +258,6 @@ def generate_blog_from_transcription(transcription):
     generated_content = response.choices[0].text.strip()
 
     return generated_content
-
-
 
 def blog_list(request):
     blog_articles = BlogPost.objects.filter(user=request.user)
@@ -268,7 +282,7 @@ def user_login(request):
         else:
             error_message = "Invalid username or password"
             return render(request, 'login.html', {'error_message': error_message})
-        
+
     return render(request, 'login.html')
 
 def user_signup(request):
@@ -290,7 +304,7 @@ def user_signup(request):
         else:
             error_message = 'Password do not match'
             return render(request, 'signup.html', {'error_message':error_message})
-        
+
     return render(request, 'signup.html')
 
 def user_logout(request):
